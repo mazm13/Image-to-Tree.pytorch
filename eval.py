@@ -40,7 +40,7 @@ with open(opt.infos_path, 'rb') as f:
     infos = utils.pickle_load(f)
 
 # override and collect parameters
-replace = ['input_fc_dir', 'input_att_dir', 'input_box_dir', 'input_label_h5', 'input_json', 'batch_size', 'id']
+replace = ['input_fc_dir', 'input_att_dir', 'input_box_dir', 'input_label_h5', 'input_treelabel_h5', 'input_json', 'input_tree_json', 'batch_size', 'id']
 ignore = ['start_from']
 
 for k in vars(infos['opt']).keys():
@@ -50,6 +50,7 @@ for k in vars(infos['opt']).keys():
         if not k in vars(opt):
             vars(opt).update({k: vars(infos['opt'])[k]}) # copy over options from model
 
+print(vars(opt))
 vocab = infos['vocab'] # ix -> word mapping
 
 pred_fn = os.path.join('eval_results/', '.saved_pred_'+ opt.id + '_' + opt.split + '.pth')

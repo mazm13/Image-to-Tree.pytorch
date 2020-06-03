@@ -16,6 +16,9 @@ import torch.utils.data as data
 import multiprocessing
 import six
 
+import dataloader_valtest
+
+
 class HybridLoader:
     """
     If db_path is a director, then use normal file loading
@@ -87,21 +90,21 @@ class Dataset(data.Dataset):
         self.norm_box_feat = getattr(opt, 'norm_box_feat', 0)
 
         # load the json file which contains additional information about the dataset
-        print('DataLoader loading json file: ', opt.input_json)
-        self.info = json.load(open(self.opt.input_json))
+        print('DataLoader loading json file: ', opt.input_tree_json)
+        self.info = json.load(open(self.opt.input_tree_json))
         if 'ix_to_word' in self.info:
             self.ix_to_word = self.info['ix_to_word']
             self.vocab_size = len(self.ix_to_word)
             print('vocab size is ', self.vocab_size)
         
         # open the hdf5 file
-        print('DataLoader loading h5 file: ', opt.input_fc_dir, opt.input_att_dir, opt.input_box_dir, opt.input_label_h5)
+        print('DataLoader loading h5 file: ', opt.input_fc_dir, opt.input_att_dir, opt.input_box_dir, opt.input_treelabel_h5)
         """
-        Setting input_label_h5 to none is used when only doing generation.
+        Setting input_treelabel_h5 to none is used when only doing generation.
         For example, when you need to test on coco test set.
         """
-        if self.opt.input_label_h5 != 'none':
-            self.h5_label_file = h5py.File(self.opt.input_label_h5, 'r', driver='core')
+        if self.opt.input_treelabel_h5 != 'none':
+            self.h5_label_file = h5py.File(self.opt.input_treelabel_h5, 'r', driver='core')
             # load in the sequence data
             seq_size = self.h5_label_file['labels'].shape
             self.label = self.h5_label_file['labels'][:]
@@ -110,6 +113,13 @@ class Dataset(data.Dataset):
             # load the pointers in full to RAM (should be small enough)
             self.label_start_ix = self.h5_label_file['label_start_ix'][:]
             self.label_end_ix = self.h5_label_file['label_end_ix'][:]
+            # load tree data, including treearray and treearray_idx
+            treearray_size = self.h5_label_file['treearray'].shape
+            self.treearray = self.h5_label_file['treearray'][:]
+            self.max_seqtree_length = treearray_size[1]
+            print('max tree array length in data is', self.max_seqtree_length)
+            self.treearray_idx = self.h5_label_file['treearray_idx'][:]
+            self.treearray_length = self.h5_label_file['treearray_length'][:]
         else:
             self.seq_length = 1
 
@@ -160,12 +170,40 @@ class Dataset(data.Dataset):
 
         return seq
 
+    def get_seqtree(self, ix, seq_per_img):
+        # fetch the sequence labels
+        ix1 = self.label_start_ix[ix] - 1 #label_start_ix starts from 1
+        ix2 = self.label_end_ix[ix] - 1
+        ncap = ix2 - ix1 + 1 # number of captions available for this image
+        assert ncap > 0, 'an image does not have any label. this can be handled but right now isn\'t'
+
+        if ncap < seq_per_img:
+            # we need to subsample (with replacement)
+            seq = np.zeros([seq_per_img, self.max_seqtree_length], dtype='int')
+            seq_idx = np.zeros([seq_per_img, self.max_seqtree_length], dtype='int')
+            seq_length = np.zeros(seq_per_img, dtype='int')
+            for q in range(seq_per_img):
+                ixl = random.randint(ix1,ix2)
+                seq[q, :] = self.treearray[ixl, :self.max_seqtree_length]
+                seq_idx[q, :] = self.treearray_idx[ixl, :self.max_seqtree_length]
+                seq_length[q] = self.treearray_length[ix]
+        else:
+            ixl = random.randint(ix1, ix2 - seq_per_img + 1)
+            seq = self.treearray[ixl: ixl + seq_per_img, :self.max_seqtree_length]
+            seq_idx = self.treearray_idx[ixl: ixl + seq_per_img, :self.max_seqtree_length]
+            seq_length = self.treearray_length[ixl: ixl + seq_per_img]
+
+        return seq, seq_idx, seq_length
+
     def collate_func(self, batch, split):
         seq_per_img = self.seq_per_img
 
         fc_batch = []
         att_batch = []
         label_batch = []
+        seqtree_batch = []
+        seqtree_idx_batch = []
+        seqtree_length_batch = []
 
         wrapped = False
 
@@ -175,6 +213,7 @@ class Dataset(data.Dataset):
         for sample in batch:
             # fetch image
             tmp_fc, tmp_att, tmp_seq, \
+                tmp_seqtree, tmp_seqtree_idx, tmp_seqtree_length, \
                 ix, it_pos_now, tmp_wrapped = sample
             if tmp_wrapped:
                 wrapped = True
@@ -187,6 +226,10 @@ class Dataset(data.Dataset):
                 # if there is ground truth
                 tmp_label[:, 1 : self.seq_length + 1] = tmp_seq
             label_batch.append(tmp_label)
+
+            seqtree_batch.append(tmp_seqtree)
+            seqtree_idx_batch.append(tmp_seqtree_idx)
+            seqtree_length_batch.append(tmp_seqtree_length)
 
             # Used for reward evaluation
             if hasattr(self, 'h5_label_file'):
@@ -229,12 +272,23 @@ class Dataset(data.Dataset):
             row[:nonzeros[ix]] = 1
         data['masks'] = mask_batch
 
+        data['seqtree'] = np.vstack(seqtree_batch)
+        data['seqtree_idx'] = np.vstack(seqtree_idx_batch)
+        # generate seqtree mask
+        
+        data['seqtree_length'] = np.concatenate(seqtree_length_batch, axis=0)
+        mask = np.repeat(np.expand_dims(np.arange(self.max_seqtree_length), axis=0), data['seqtree_length'].shape[0], axis=0) < \
+            np.expand_dims(data['seqtree_length'], axis=2)
+        data['seqtree_mask'] = mask.astype('float32')
+
         data['gts'] = gts # all ground truth captions of each images
         data['bounds'] = {'it_pos_now': it_pos_now, # the it_pos_now of the last sample
                           'it_max': len(self.split_ix[split]), 'wrapped': wrapped}
         data['infos'] = infos
 
         data = {k:torch.from_numpy(v) if type(v) is np.ndarray else v for k,v in data.items()} # Turn all ndarray to torch tensor
+        data['seqtree'] = data['seqtree'].long()
+        data['seqtree_idx'] = data['seqtree_idx'].long()
 
         return data
 
@@ -271,10 +325,13 @@ class Dataset(data.Dataset):
             fc_feat = np.zeros((0), dtype='float32')
         if hasattr(self, 'h5_label_file'):
             seq = self.get_captions(ix, self.seq_per_img)
+            treearray, treearray_idx, treearray_length = self.get_seqtree(ix, self.seq_per_img)
         else:
             seq = None
+            treearray, treearray_idx, treearray_length = None, None, None
         return (fc_feat,
                 att_feat, seq,
+                treearray, treearray_idx, treearray_length,
                 ix, it_pos_now, wrapped)
 
     def __len__(self):
@@ -285,21 +342,29 @@ class DataLoader:
         self.opt = opt
         self.batch_size = self.opt.batch_size
         self.dataset = Dataset(opt)
+        self.valtest_dataset = dataloader_valtest.Dataset(opt)
 
         # Initialize loaders and iters
         self.loaders, self.iters = {}, {}
         for split in ['train', 'val', 'test']:
             if split == 'train':
                 sampler = MySampler(self.dataset.split_ix[split], shuffle=True, wrap=True)
+                self.loaders[split] = data.DataLoader(dataset=self.dataset,
+                                                      batch_size=self.batch_size,
+                                                      sampler=sampler,
+                                                      pin_memory=True,
+                                                      num_workers=4, # 4 is usually enough
+                                                      collate_fn=lambda x: self.dataset.collate_func(x, split),
+                                                      drop_last=False)
             else:
-                sampler = MySampler(self.dataset.split_ix[split], shuffle=False, wrap=False)
-            self.loaders[split] = data.DataLoader(dataset=self.dataset,
-                                                  batch_size=self.batch_size,
-                                                  sampler=sampler,
-                                                  pin_memory=True,
-                                                  num_workers=4, # 4 is usually enough
-                                                  collate_fn=lambda x: self.dataset.collate_func(x, split),
-                                                  drop_last=False)
+                sampler = MySampler(self.valtest_dataset.split_ix[split], shuffle=False, wrap=False)
+                self.loaders[split] = data.DataLoader(dataset=self.valtest_dataset,
+                                                      batch_size=self.batch_size,
+                                                      sampler=sampler,
+                                                      pin_memory=True,
+                                                      num_workers=4, # 4 is usually enough
+                                                      collate_fn=lambda x: self.valtest_dataset.collate_func(x, split),
+                                                      drop_last=False)
             self.iters[split] = iter(self.loaders[split])
 
     def get_batch(self, split):
@@ -399,4 +464,30 @@ class MySampler(data.sampler.Sampler):
             'iter_counter': self.iter_counter - prefetched_num
         }
 
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input_tree_json', default='data/cocotree.json', type=str, help='input json file to process into hdf5')
+    args = parser.parse_args()
     
+    args.seq_per_img = 5
+    args.use_att = True
+    args.use_fc = True
+    args.input_tree_json = "data/cocotree.json"
+    args.input_json = "data/cocotalk.json"
+    args.input_fc_dir = "data/cocobu_fc"
+    args.input_att_dir = "data/cocobu_att"
+    args.input_box_dir = "data/cocobu_box"
+    args.input_label_h5 = "data/cocotalk_label.h5"
+    args.input_treelabel_h5 = "data/cocotree_label.h5"
+    args.batch_size = 2
+    args.train_only = 0
+
+    loader = DataLoader(args)
+    # data = loader.get_batch('train')    
+    # torch.save(data, 'graph_utils/sample_data.pt')
+    # valdata = loader.get_batch('val')
+    # torch.save(valdata, 'graph_utils/sample_valdata.pt')
+    testdata = loader.get_batch('test')
+    torch.save(testdata, 'graph_utils/sample_testdata.pt')

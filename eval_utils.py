@@ -15,6 +15,7 @@ import time
 import os
 import sys
 import misc.utils as utils
+from graph_utils import utils as gutils
 
 # load coco-caption if available
 try:
@@ -127,7 +128,7 @@ def language_eval(dataset, preds, preds_n, eval_kwargs, split):
 
 def eval_split(model, crit, loader, eval_kwargs={}):
     verbose = eval_kwargs.get('verbose', True)
-    verbose_beam = eval_kwargs.get('verbose_beam', 1)
+    verbose_beam = eval_kwargs.get('verbose_beam', 0)
     verbose_loss = eval_kwargs.get('verbose_loss', 1)
     num_images = eval_kwargs.get('num_images', eval_kwargs.get('val_images_use', -1))
     split = eval_kwargs.get('split', 'val')
@@ -153,16 +154,16 @@ def eval_split(model, crit, loader, eval_kwargs={}):
         data = loader.get_batch(split)
         n = n + len(data['infos'])
 
-        if data.get('labels', None) is not None and verbose_loss:
-            # forward the model to get loss
-            tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
-            tmp = [_.cuda() if _ is not None else _ for _ in tmp]
-            fc_feats, att_feats, labels, masks, att_masks = tmp
+        # if data.get('labels', None) is not None and verbose_loss:
+        #     # forward the model to get loss
+        #     tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
+        #     tmp = [_.cuda() if _ is not None else _ for _ in tmp]
+        #     fc_feats, att_feats, labels, masks, att_masks = tmp
 
-            with torch.no_grad():
-                loss = crit(model(fc_feats, att_feats, labels, att_masks), labels[:,1:], masks[:,1:]).item()
-            loss_sum = loss_sum + loss
-            loss_evals = loss_evals + 1
+        #     with torch.no_grad():
+        #         loss = crit(model(fc_feats, att_feats, labels, att_masks), labels[:,1:], masks[:,1:]).item()
+        #     loss_sum = loss_sum + loss
+        #     loss_evals = loss_evals + 1
 
         # forward the model to also get generated samples for each image
         # Only leave one feature for each image, in case duplicate sample
@@ -175,16 +176,23 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             tmp_eval_kwargs = eval_kwargs.copy()
             tmp_eval_kwargs.update({'sample_n': 1})
             seq, seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
-            seq = seq.data
+            (seq, seqtree_idx, seqLen), seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
             entropy = - (F.softmax(seq_logprobs, dim=2) * seq_logprobs).sum(2).sum(1) / ((seq>0).float().sum(1)+1)
             perplexity = - seq_logprobs.gather(2, seq.unsqueeze(2)).squeeze(2).sum(1) / ((seq>0).float().sum(1)+1)
         
         # Print beam search
         if beam_size > 1 and verbose_beam:
             for i in range(fc_feats.shape[0]):
-                print('\n'.join([utils.decode_sequence(loader.get_vocab(), _['seq'].unsqueeze(0))[0] for _ in model.done_beams[i]]))
+                # print('\n'.join([utils.decode_sequence(loader.get_vocab(), _['seq'].unsqueeze(0))[0] for _ in model.done_beams[i]]))
+                for _s in model.done_beams:
+                    for __s in _s:
+                        # seq_len = __s['seq'].shape[0]
+                        seq_len = __s['seqLen'].item()
+                        __ss = gutils.decode_sequence(loader.get_vocab(), __s['seq'].unsqueeze(0), __s['seq_idx'].unsqueeze(0), [seq_len])
+                        print(__ss[0])
                 print('--' * 10)
-        sents = utils.decode_sequence(loader.get_vocab(), seq)
+        # sents = utils.decode_sequence(loader.get_vocab(), seq)
+        sents = gutils.decode_sequence(loader.get_vocab(), seq, seqtree_idx, seqLen)
 
         for k, sent in enumerate(sents):
             entry = {'image_id': data['infos'][k]['id'], 'caption': sent, 'perplexity': perplexity[k].item(), 'entropy': entropy[k].item()}

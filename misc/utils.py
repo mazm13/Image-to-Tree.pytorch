@@ -52,6 +52,10 @@ def if_use_feat(caption_model):
         use_att, use_fc = False, False
     elif caption_model in ['updown', 'topdown']:
         use_fc, use_att = True, True
+    elif caption_model in ['tree_att']:
+        use_att, use_fc = True, True
+    elif caption_model in ['show_tell_tree']:
+        use_att, use_fc = False, True
     else:
         use_att, use_fc = True, False
     return use_fc, use_att
@@ -361,7 +365,6 @@ def length_average(length, logprobs, alpha=0.):
     Returns the average probability of tokens in a sequence.
     """
     return logprobs / length
-
 
 class NoamOpt(object):
     "Optim wrapper that implements rate."

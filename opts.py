@@ -5,7 +5,9 @@ import misc.utils as utils
 def parse_opt():
     parser = argparse.ArgumentParser()
     # Data input settings
-    parser.add_argument('--input_json', type=str, default='data/coco.json',
+    parser.add_argument('--input_json', type=str, default='data/cocotalk.json',
+                    help='path to the json file containing additional info and vocab')
+    parser.add_argument('--input_tree_json', default='data/cocotree.json', type=str, 
                     help='path to the json file containing additional info and vocab')
     parser.add_argument('--input_fc_dir', type=str, default='data/cocotalk_fc',
                     help='path to the directory containing the preprocessed fc feats')
@@ -13,7 +15,9 @@ def parse_opt():
                     help='path to the directory containing the preprocessed att feats')
     parser.add_argument('--input_box_dir', type=str, default='data/cocotalk_box',
                     help='path to the directory containing the boxes of att feats')
-    parser.add_argument('--input_label_h5', type=str, default='data/coco_label.h5',
+    parser.add_argument('--input_label_h5', type=str, default='data/cocotalk_label.h5',
+                    help='path to the h5file containing the preprocessed dataset')
+    parser.add_argument('--input_treelabel_h5', type=str, default='data/cocotree_label.h5',
                     help='path to the h5file containing the preprocessed dataset')
     parser.add_argument('--start_from', type=str, default=None,
                     help="""continue training from saved model at this path. Path must contain files saved by previous training process: 
@@ -78,6 +82,8 @@ def parse_opt():
                     help='used when sample_method = greedy, indicates number of beams in beam search. Usually 2 or 3 works well. More is not better. Set this to 1 for faster runtime but a bit worse performance.')
     parser.add_argument('--max_length', type=int, default=20,
                     help='Maximum length during sampling')
+    parser.add_argument('--max_seqtree_length', type=int, default=40,
+                    help='Maximum legnth during sampling tree sequence')
     parser.add_argument('--length_penalty', type=str, default='',
                     help='wu_X or avg_X, X is the alpha')
     parser.add_argument('--block_trigrams', type=int, default=0,
@@ -236,7 +242,7 @@ def add_eval_options(parser):
                     help='how many images to use when periodically evaluating the loss? (-1 = all)')
     parser.add_argument('--language_eval', type=int, default=0,
                     help='Evaluate language as well (1 = yes, 0 = no)? BLEU/CIDEr/METEOR/ROUGE_L? requires coco-caption code from Github.')
-    parser.add_argument('--dump_images', type=int, default=1,
+    parser.add_argument('--dump_images', type=int, default=0,
                     help='Dump images into vis/imgs folder for vis? (1=yes,0=no)')
     parser.add_argument('--dump_json', type=int, default=1,
                     help='Dump json with predictions into vis folder? (1=yes,0=no)')
@@ -266,6 +272,8 @@ def add_eval_options(parser):
                     help='Remove bad endings')
     parser.add_argument('--suppress_UNK', type=int, default=1,
                     help='Not predicting UNK')
+    parser.add_argument('--suppress_EOB_factor', type=float, default=1.0,
+                    help='exponential factor for probability of predicting EOB, greater than for suppressing')
     # For evaluation on a folder of images:
     parser.add_argument('--image_folder', type=str, default='', 
                     help='If this is nonempty then will predict on the images in this folder path')
@@ -280,8 +288,12 @@ def add_eval_options(parser):
                     help='path to the h5file containing the preprocessed dataset')
     parser.add_argument('--input_label_h5', type=str, default='',
                     help='path to the h5file containing the preprocessed dataset')
-    parser.add_argument('--input_json', type=str, default='', 
+    parser.add_argument('--input_treelabel_h5', type=str, default='data/cocotree_label.h5',
+                    help='path to the h5file containing the preprocessed dataset')
+    parser.add_argument('--input_json', type=str, default='data/cocotalk.json', 
                     help='path to the json file containing additional info and vocab. empty = fetch from model checkpoint.')
+    parser.add_argument('--input_tree_json', default='data/cocotree.json', type=str, 
+                    help='path to the json file containing additional info and vocab')
     parser.add_argument('--split', type=str, default='test', 
                     help='if running on MSCOCO images, which split to use: val|test|train')
     parser.add_argument('--coco_json', type=str, default='', 

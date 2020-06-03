@@ -167,12 +167,12 @@ def train(opt):
             torch.cuda.synchronize()
             start = time.time()
 
-            tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
+            tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks'], data['seqtree'], data['seqtree_idx'], data['seqtree_mask']]
             tmp = [_ if _ is None else _.cuda() for _ in tmp]
-            fc_feats, att_feats, labels, masks, att_masks = tmp
+            fc_feats, att_feats, labels, masks, att_masks, seqtree, seqtree_idx, seqtree_mask = tmp
             
             optimizer.zero_grad()
-            model_out = dp_lw_model(fc_feats, att_feats, labels, masks, att_masks, data['gts'], torch.arange(0, len(data['gts'])), sc_flag, struc_flag)
+            model_out = dp_lw_model(fc_feats, att_feats, labels, masks, att_masks, seqtree, seqtree_idx, seqtree_mask, data['gts'], torch.arange(0, len(data['gts'])), sc_flag, struc_flag)
 
             loss = model_out['loss'].mean()
 
@@ -226,6 +226,12 @@ def train(opt):
             # make evaluation on validation set, and save model
             if (iteration % opt.save_checkpoint_every == 0 and not opt.save_every_epoch) or \
                 (epoch_done and opt.save_every_epoch):
+
+                utils.save_checkpoint(opt, model, infos, optimizer, histories)
+                if opt.save_history_ckpt:
+                    utils.save_checkpoint(opt, model, infos, optimizer,
+                        append=str(epoch) if opt.save_every_epoch else str(iteration))
+
                 # eval model
                 eval_kwargs = {'split': 'val',
                                 'dataset': opt.input_json}
